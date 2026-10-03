@@ -70,6 +70,7 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 
 from __future__ import annotations
 
+import re
 from harness.middleware import Middleware
 
 
@@ -79,16 +80,29 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        claims = report.get("claims")
+        observed = ctx.observed_text
+        kept = []
+        for claim in claims if isinstance(claims, list) else []:
+            if not isinstance(claim, dict) or not isinstance(claim.get("text"), str) or not claim["text"]:
+                continue
+            text = claim["text"]
+            if any(text in line for line in observed.splitlines()):
+                kept.append(claim)
+                continue
+            docs = [doc for doc in ctx.corpus.docs if doc.body and doc.body in observed] if ctx.corpus else []
+            for seam in re.finditer(r" và | nhưng |; ", text):
+                left, right = text[:seam.start()], text[seam.end():]
+                first = next((d for d in docs if left and any(left in line for line in d.body.splitlines())), None)
+                second = next((d for d in docs if right and any(right in line for line in d.body.splitlines())), None)
+                if first and second and first.doc_id != second.doc_id:
+                    kept.extend(({**claim, "text": left, "doc_id": first.doc_id},
+                                 {**claim, "text": right, "doc_id": second.doc_id}))
+                    report["abstain"] = True
+                    break
+        report["claims"] = kept
+        report["citations"] = sorted({c["doc_id"] for c in kept if isinstance(c.get("doc_id"), str)})
+        if not kept:
+            report["abstain"] = True
+            report["answer"] = "Không đủ căn cứ từ tài liệu đã đọc để khẳng định câu trả lời."
+        return report
