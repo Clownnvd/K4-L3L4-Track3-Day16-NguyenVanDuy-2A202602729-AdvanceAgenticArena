@@ -71,6 +71,7 @@ Xem `harness/middleware.py` để biết thứ tự các hook.
 from __future__ import annotations
 
 import re
+from harness.layers.evidence_recovery import recover_splices
 from harness.middleware import Middleware
 
 
@@ -78,6 +79,9 @@ class Critic(Middleware):
     """Xoá những gì bằng chứng không đỡ; abstain khi không còn gì."""
 
     name = "critic"
+
+    def __init__(self, recover_fragments=True):
+        self.recover_fragments = recover_fragments
 
     def after_agent(self, ctx, report):
         claims = report.get("claims")
@@ -105,4 +109,4 @@ class Critic(Middleware):
         if not kept:
             report["abstain"] = True
             report["answer"] = "Không đủ căn cứ từ tài liệu đã đọc để khẳng định câu trả lời."
-        return report
+        return recover_splices(ctx, report, claims) if self.recover_fragments else report

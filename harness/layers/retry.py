@@ -64,6 +64,7 @@ from __future__ import annotations
 from arena.model import is_degraded  # noqa: F401  (dùng trong phần TODO)
 
 from harness.middleware import Middleware
+from harness.layers.evidence_recovery import expand_query
 
 #: Tổng số lần thử, tính cả lần đầu.
 DEFAULT_MAX_ATTEMPTS = 3
@@ -73,7 +74,11 @@ DEFAULT_RESERVE = 1
 
 
 class Retry(Middleware):
-    """Gọi lại một lượt công cụ trả về kết quả hỏng hoặc suy giảm."""
+    """Mở rộng truy vấn theo miền dữ liệu, rồi retry có giới hạn.
+
+    query_mode='none' chạy lại hành vi ban đầu để đối chiếu. 'intent'
+    giữ câu hỏi gốc và thêm từ khóa/loại tài liệu, không suy ra đáp án.
+    """
 
     name = "retry"
 
@@ -81,11 +86,21 @@ class Retry(Middleware):
         self,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         reserve: int = DEFAULT_RESERVE,
+        query_mode: str = 'intent',
     ) -> None:
         self.max_attempts = max(1, int(max_attempts))
         self.reserve = max(0, int(reserve))
+        if query_mode not in ('none', 'expanded', 'intent'):
+            raise ValueError('query_mode must be none, expanded or intent')
+        self.query_mode = query_mode
 
     def wrap_tool_call(self, ctx, call, name, args):
+        if self.query_mode != 'none' and name == 'search' and isinstance(args.get('query'), str):
+            original = args['query']
+            expanded = expand_query(original, self.query_mode)
+            if expanded != original:
+                args = {**args, 'query': expanded}
+                ctx.state.setdefault('expanded_queries', []).append({'original': original, 'expanded': expanded})
         result = call(name, args)
         attempts = 1
         while attempts < self.max_attempts and (not result.ok or is_degraded(result.content)):
